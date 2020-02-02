@@ -1,0 +1,60 @@
+<launch>
+<group ns="map_merge">
+  <node pkg="multirobot_map_merge" type="map_merge" respawn="false" name="map_merge" output="screen">
+    <param name="robot_map_topic" value="map"/>
+    <param name="robot_namespace" value="robot"/>
+    <param name="merged_map_topic" value="map"/>
+    <param name="world_frame" value="world"/> <!-- the true transformation between the robot frames and the world_frames are not respected -->
+    <param name="known_init_poses" value="true"/>
+    <param name="merging_rate" value="4."/>
+    <param name="discovery_rate" value="1."/>
+    <param name="estimation_rate" value="0.0"/>
+    <param name="estimation_confidence" value="1.0"/>
+  </node>
+</group>
+
+
+<!-- Only the relative distances are of interest -->
+<group ns="/robot1/map_merge">
+  <param name="init_pose_x" value="0.0"/>
+  <param name="init_pose_y" value="0.0"/>
+  <param name="init_pose_z" value="0.0"/>
+  <param name="init_pose_yaw" value="0.0"/>
+</group>
+<group ns="/robot2/map_merge">
+  <param name="init_pose_x" value="-20."/>
+  <param name="init_pose_y" value="-260."/>
+  <param name="init_pose_z" value="0.0"/>
+  <param name="init_pose_yaw" value="0.0"/>
+</group>
+
+
+<!--
+
+Alternative offsets from true transforms wrt. world frame.
+Values are the negative transforms devided by the map resolution
+robot1: -x -2.0 -y -2.0 -z 0.01 (world -> robot1)
+robot2: -x -1.5 -y 4.5 -z 0.01  (world -> robot2)
+
+<group ns="/robot1/map_merge">
+  <param name="init_pose_x" value="80.0"/>
+  <param name="init_pose_y" value="80.0"/>
+  <param name="init_pose_z" value="0.0"/>
+  <param name="init_pose_yaw" value="0.0"/>
+</group>
+<group ns="/robot2/map_merge">
+  <param name="init_pose_x" value="60."/>
+  <param name="init_pose_y" value="-180."/>
+  <param name="init_pose_z" value="0.0"/>
+  <param name="init_pose_yaw" value="0.0"/>
+</group>
+
+ -->
+
+<!-- Hack offset to alligne the merged map with the true maps
+<node name="world_merged_tf" pkg="calibration" type="static_transform_publisher_pose" args="'-x -1.75 -y 1.25 -z 0.01' world merged/map 50"/>
+DONT FORGET TO SET: <param name="world_frame" value="world"/>
+-->
+</launch>
+
+

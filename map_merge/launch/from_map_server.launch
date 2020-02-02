@@ -5,13 +5,29 @@ you can run this with test maps provided in m-explore-extra repo
 https://github.com/hrnr/m-explore-extra
 
 roslaunch multirobot_map_merge from_map_server.launch map1:=PATH_TO_m-explore-extra/map_merge/gmapping_maps/2011-08-09-12-22-52.yaml map2:=PATH_TO_m-explore-extra/map_merge/gmapping_maps/2012-01-28-11-12-01.yaml rviz:=true
+roslaunch multirobot_map_merge from_map_server.launch map1:=/opt/repositories/ml4pro_dev_miele/catkin_ws/src/m-explore-extra/map_merge/gmapping_maps/2011-08-09-12-22-52.yaml map2:=/opt/repositories/ml4pro_dev_miele/catkin_ws/src/m-explore-extra/map_merge/gmapping_maps/2012-01-28-11-12-01.yaml rviz:=true
+
+# hefei_arenaA
+roslaunch multirobot_map_merge from_map_server.launch map1:=/opt/repositories/ml4pro_dev_miele/catkin_ws/src/m-explore-extra/map_merge/hefei_arenaA/miele4.yaml map2:=/opt/repositories/ml4pro_dev_miele/catkin_ws/src/m-explore-extra/map_merge/hefei_arenaA/miele5.yaml rviz:=true
 -->
 <launch>
   <arg name="map1" default="map1.yaml"/>
   <arg name="map2" default="map2.yaml"/>
   <arg name="rviz" default="false"/>
 
-  <include file="$(find multirobot_map_merge)/launch/map_merge.launch"/>
+
+  <arg name="ns_1" default="robot1"/>
+  <arg name="robot_position_1" default="-x -2.0 -y -2.0 -z 0.01"/>
+  <arg name="ns_2" default="robot2"/>
+  <arg name="robot_position_2" default="-x -1.5 -y 4.5 -z 0.01"/>
+
+
+  <node name="$(arg ns_1)_map_world_tf" pkg="calibration" type="static_transform_publisher_pose" args="'$(arg robot_position_1)' world $(arg ns_1) 50"/>
+  <node name="$(arg ns_2)_map_world_tf" pkg="calibration" type="static_transform_publisher_pose" args="'$(arg robot_position_2)' world $(arg ns_2) 50"/>
+
+
+
+  <include file="$(find multirobot_map_merge)/launch/map_merge_hefei_arenaA.launch"/>
 
   <node pkg="map_server" type="map_server" name="robot1_publisher" args="$(arg map1)" output="screen">
     <param name="frame_id" value="robot1"/>
@@ -25,4 +41,6 @@ roslaunch multirobot_map_merge from_map_server.launch map1:=PATH_TO_m-explore-ex
   </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz" args="-d $(find multirobot_map_merge)/launch/map_merge.rviz"/>
+
+
 </launch>
