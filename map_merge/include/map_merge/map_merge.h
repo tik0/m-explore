@@ -48,6 +48,7 @@
 #include <map_msgs/OccupancyGridUpdate.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <ros/ros.h>
+#include <tf2_ros/transform_broadcaster.h>
 #include <boost/thread.hpp>
 
 namespace map_merge
@@ -74,15 +75,19 @@ private:
   double merging_rate_;
   double discovery_rate_;
   double estimation_rate_;
-  double confidence_threshold_;
+  double confidence_treshold_;
   std::string robot_map_topic_;
   std::string robot_map_updates_topic_;
   std::string robot_namespace_;
   std::string world_frame_;
+  std::vector<std::string> robot_names_;
+  std::string reference_robot_ = "/robot2"; // NOTE ref fixed for testing
   bool have_initial_poses_;
+  bool have_reference_frame_ = false;
 
   // publishing
   ros::Publisher merged_map_publisher_;
+  tf2_ros::TransformBroadcaster transform_br;
   // maps robots namespaces to maps. does not own
   std::unordered_map<std::string, MapSubscription*> robots_;
   // owns maps -- iterator safe

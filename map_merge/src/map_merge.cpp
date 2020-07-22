@@ -54,7 +54,7 @@ MapMerge::MapMerge() : subscriptions_size_(0)
   private_nh.param("discovery_rate", discovery_rate_, 0.05);
   private_nh.param("estimation_rate", estimation_rate_, 0.5);
   private_nh.param("known_init_poses", have_initial_poses_, true);
-  private_nh.param("estimation_confidence", confidence_threshold_, 1.0);
+  private_nh.param("estimation_confidence", confidence_treshold_, 2.0);
   private_nh.param<std::string>("robot_map_topic", robot_map_topic_, "map");
   private_nh.param<std::string>("robot_map_updates_topic",
                                 robot_map_updates_topic_, "map_updates");
@@ -95,6 +95,8 @@ void MapMerge::topicSubscribing()
       // we already know this robot
       continue;
     }
+    std::cout << "adding robot name " << robot_name << " to list" << std::endl;
+    robot_names_.push_back(robot_name);
 
     if (have_initial_poses_ && !getInitPose(robot_name, init_pose)) {
       ROS_WARN("Couldn't get initial position for robot [%s]\n"
@@ -147,6 +149,8 @@ void MapMerge::mapMerging()
 {
   ROS_DEBUG("Map merging started.");
 
+  std::vector<geometry_msgs::TransformStamped> transforms;
+
   if (have_initial_poses_) {
     std::vector<nav_msgs::OccupancyGridConstPtr> grids;
     std::vector<geometry_msgs::Transform> transforms;
@@ -170,18 +174,29 @@ void MapMerge::mapMerging()
     std::lock_guard<std::mutex> lock(pipeline_mutex_);
     merged_map = pipeline_.composeGrids();
   }
+
+
+  transforms = pipeline_.transformsForPublish(robot_names_);
+
   if (!merged_map) {
     return;
   }
+  
+  ROS_DEBUG("transforms calculated, publishing");
+  for (auto& t : transforms) {
+    std::cout << t << std::endl;
+  }
+
+  if(have_reference_frame_) transform_br.sendTransform(transforms);
+
 
   ROS_DEBUG("all maps merged, publishing");
   ros::Time now = ros::Time::now();
   merged_map->info.map_load_time = now;
   merged_map->header.stamp = now;
   merged_map->header.frame_id = world_frame_;
-
-  ROS_ASSERT(merged_map->info.resolution > 0.f);
   merged_map_publisher_.publish(merged_map);
+
 }
 
 void MapMerge::poseEstimation()
@@ -199,9 +214,15 @@ void MapMerge::poseEstimation()
 
   std::lock_guard<std::mutex> lock(pipeline_mutex_);
   pipeline_.feed(grids.begin(), grids.end());
-  // TODO allow user to change feature type
-  pipeline_.estimateTransforms(combine_grids::FeatureType::AKAZE,
-                               confidence_threshold_);
+  if(std::find(robot_names_.begin(), robot_names_.end(), reference_robot_) != robot_names_.end()) // Is reference found yet?
+  {
+      //std::cout << "Reference = " << reference_robot_ << std::endl;
+      // estimateTransforms returns true for having a reference frame
+      have_reference_frame_ = pipeline_.estimateTransforms(combine_grids::FeatureType::AKAZE,
+                                                           confidence_treshold_,
+                                                           robot_names_,
+                                                           reference_robot_);
+  }
 }
 
 void MapMerge::fullMapUpdate(const nav_msgs::OccupancyGrid::ConstPtr& msg,

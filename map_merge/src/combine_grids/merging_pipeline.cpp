@@ -45,22 +45,19 @@
 
 namespace combine_grids
 {
-bool MergingPipeline::estimateTransforms(FeatureType feature_type,
-                                         double confidence)
+bool MergingPipeline::estimateTransforms(FeatureType feature_type, double confidence, std::vector<std::string> robots, std::string reference_robot)
 {
   std::vector<cv::detail::ImageFeatures> image_features;
   std::vector<cv::detail::MatchesInfo> pairwise_matches;
   std::vector<cv::detail::CameraParams> transforms;
   std::vector<int> good_indices;
+  int ref_id = 0;
+
   // TODO investigate value translation effect on features
-  cv::Ptr<cv::detail::FeaturesFinder> finder =
-      internal::chooseFeatureFinder(feature_type);
-  cv::Ptr<cv::detail::FeaturesMatcher> matcher =
-      cv::makePtr<cv::detail::AffineBestOf2NearestMatcher>();
-  cv::Ptr<cv::detail::Estimator> estimator =
-      cv::makePtr<cv::detail::AffineBasedEstimator>();
-  cv::Ptr<cv::detail::BundleAdjusterBase> adjuster =
-      cv::makePtr<cv::detail::BundleAdjusterAffinePartial>();
+  cv::Ptr<cv::detail::FeaturesFinder> finder = internal::chooseFeatureFinder(feature_type);
+  cv::Ptr<cv::detail::FeaturesMatcher> matcher = cv::makePtr<cv::detail::AffineBestOf2NearestMatcher>();
+  cv::Ptr<cv::detail::Estimator> estimator = cv::makePtr<cv::detail::AffineBasedEstimator>();
+  //cv::Ptr<cv::detail::BundleAdjusterBase> adjuster = cv::makePtr<cv::detail::BundleAdjusterAffinePartial>();
 
   if (images_.empty()) {
     return true;
@@ -83,29 +80,13 @@ bool MergingPipeline::estimateTransforms(FeatureType feature_type,
   matcher->collectGarbage();
 
 #ifndef NDEBUG
-  internal::writeDebugMatchingInfo(images_, image_features, pairwise_matches);
+  //internal::writeDebugMatchingInfo(images_, image_features, pairwise_matches);
 #endif
 
   /* use only matches that has enough confidence. leave out matches that are not
    * connected (small components) */
   good_indices = cv::detail::leaveBiggestComponent(
       image_features, pairwise_matches, static_cast<float>(confidence));
-
-  // no match found. try set first non-empty grid as reference frame. we try to
-  // avoid setting empty grid as reference frame, in case some maps never
-  // arrive. If all is empty just set null transforms.
-  if (good_indices.size() == 1) {
-    transforms_.clear();
-    transforms_.resize(images_.size());
-    for (size_t i = 0; i < images_.size(); ++i) {
-      if (!images_[i].empty()) {
-        // set identity
-        transforms_[i] = cv::Mat::eye(3, 3, CV_64F);
-        break;
-      }
-    }
-    return true;
-  }
 
   /* estimate transform */
   ROS_DEBUG("calculating transforms in global reference frame");
@@ -119,34 +100,69 @@ bool MergingPipeline::estimateTransforms(FeatureType feature_type,
   for (auto& transform : transforms) {
     transform.R.convertTo(transform.R, CV_32F);
   }
+
+/*
+ * The optimization fails horribly if the maps are not from simulations (if maps are noisy)
+ *
   ROS_DEBUG("optimizing global transforms");
   adjuster->setConfThresh(confidence);
   if (!(*adjuster)(image_features, pairwise_matches, transforms)) {
     ROS_WARN("Bundle adjusting failed. Could not estimate transforms.");
     return false;
   }
+*/
 
   transforms_.clear();
   transforms_.resize(images_.size());
   size_t i = 0;
   for (auto& j : good_indices) {
     // we want to work with transforms as doubles
-    transforms[i].R.convertTo(transforms_[static_cast<size_t>(j)], CV_64F);
+    transforms[i].R.convertTo(transforms_[static_cast<size_t>(j)], CV_64FC1);
     ++i;
   }
 
+  /*
+   *  Check which robot is chosen as reference (transform there is identity) from merger. Is it the same as the wanted?
+   *  If not, change transforms...
+   */
+  for (size_t i = 0; i < robots.size(); ++i) {
+      if(robots.at(i) == reference_robot) {
+          ref_id = i;
+      }
+  }
+
+  // cv likes doubles for matrix inverting very much..
+  for(auto tr : transforms_) {
+      cv::Mat mat = cv::Mat::eye(3, 3, CV_64FC1);
+      mat = tr.clone();
+      mat.assignTo(tr, CV_64FC1);
+  }
+  ROS_DEBUG("Try setting reference frame");
+
+  // Check if the reference robot has its transformation yet. Otherwise the tf subscriber fails.
+  if (transforms_.at(ref_id).empty()) {
+      ROS_INFO("no transform for reference frame available yet");
+      return false;
+  }
+  /*
+   * If the reference is not the correct one, the transforms must be calculated to the correct one
+   */
+  for (size_t i = 0; i < transforms_.size(); ++i) {
+      cv::Mat diff = transforms_.at(i) != cv::Mat::eye(3, 3, CV_64FC1);
+      if(cv::countNonZero(diff) == 0) {
+          if(i != ref_id) {
+              cv::Mat Tref_inv = transforms_.at(ref_id).inv();
+              for(size_t j = 0; j < transforms_.size(); ++j) {
+                  if(j == ref_id) transforms_.at(j) = cv::Mat::eye(3, 3, CV_64FC1);
+                  else transforms_.at(j) = transforms_.at(j) * Tref_inv;
+              }
+          }
+          break;
+      }
+  }
   return true;
 }
 
-// checks whether given matrix is an identity, i.e. exactly appropriate Mat::eye
-static inline bool isIdentity(const cv::Mat& matrix)
-{
-  if (matrix.empty()) {
-    return false;
-  }
-  cv::MatExpr diff = matrix != cv::Mat::eye(matrix.size(), matrix.type());
-  return cv::countNonZero(diff) == 0;
-}
 
 nav_msgs::OccupancyGrid::Ptr MergingPipeline::composeGrids()
 {
@@ -180,63 +196,59 @@ nav_msgs::OccupancyGrid::Ptr MergingPipeline::composeGrids()
   nav_msgs::OccupancyGrid::Ptr result;
   internal::GridCompositor compositor;
   result = compositor.compose(imgs_warped, rois);
-
-  // set correct resolution to output grid. use resolution of identity (works
-  // for estimated trasforms), or any resolution (works for know_init_positions)
-  // - in that case all resolutions should be the same.
-  float any_resolution = 0.0;
-  for (size_t i = 0; i < transforms_.size(); ++i) {
-    // check if this transform is the reference frame
-    if (isIdentity(transforms_[i])) {
-      result->info.resolution = grids_[i]->info.resolution;
-      break;
-    }
-    if (grids_[i]) {
-      any_resolution = grids_[i]->info.resolution;
-    }
-  }
-  if (result->info.resolution <= 0.f) {
-    result->info.resolution = any_resolution;
-  }
-
-  // set grid origin to its centre
-  result->info.origin.position.x =
-      -(result->info.width / 2.0) * double(result->info.resolution);
-  result->info.origin.position.y =
-      -(result->info.height / 2.0) * double(result->info.resolution);
-  result->info.origin.orientation.w = 1.0;
+  result->info.map_load_time = ros::Time::now();
+  // TODO is this correct?
+  result->info.resolution = grids_[0]->info.resolution;
 
   return result;
 }
 
-std::vector<geometry_msgs::Transform> MergingPipeline::getTransforms() const
+
+std::vector<geometry_msgs::TransformStamped> MergingPipeline::transformsForPublish(std::vector<std::string> robots)
 {
-  std::vector<geometry_msgs::Transform> result;
+
+  std::vector<geometry_msgs::TransformStamped> result;
   result.reserve(transforms_.size());
 
-  for (auto& transform : transforms_) {
-    if (transform.empty()) {
-      result.emplace_back();
+
+  for (size_t i = 0; i < transforms_.size(); ++i) {
+    if (transforms_.at(i).empty()) {
+      //result.emplace_back();
       continue;
     }
+    cv::Mat T_inv;
+    T_inv = transforms_.at(i);//.inv();
 
-    ROS_ASSERT(transform.type() == CV_64F);
-    geometry_msgs::Transform ros_transform;
-    ros_transform.translation.x = transform.at<double>(0, 2);
-    ros_transform.translation.y = transform.at<double>(1, 2);
-    ros_transform.translation.z = 0.;
+    ROS_ASSERT(transforms_[i].type() == CV_64FC1);
+    geometry_msgs::TransformStamped ros_transform;
+    ros_transform.header.frame_id = "/world";                   // Transform from ... TODO: Get this from launch file!
+    ros_transform.child_frame_id = robots.at(i) + "/map";       // Transform to   ...
+
+    ros_transform.header.stamp = ros::Time::now();
+
+    ros_transform.transform.translation.x = T_inv.at<double>(0, 2);
+    ros_transform.transform.translation.y = T_inv.at<double>(1, 2);
+    ros_transform.transform.translation.z = 0.;
 
     // our rotation is in fact only 2D, thus quaternion can be simplified
-    double a = transform.at<double>(0, 0);
-    double b = transform.at<double>(1, 0);
-    ros_transform.rotation.w = std::sqrt(2. + 2. * a) * 0.5;
-    ros_transform.rotation.x = 0.;
-    ros_transform.rotation.y = 0.;
-    ros_transform.rotation.z = std::copysign(std::sqrt(2. - 2. * a) * 0.5, b);
+    double a = T_inv.at<double>(0, 0);
+    double b = T_inv.at<double>(1, 0);
+    double scale;
 
+    scale = sqrt(pow(a, 2) + pow(b, 2));
+    if(scale < -1 || scale > 1) {
+        a /= scale;
+        b /= scale;
+    }
+
+    ros_transform.transform.rotation.w = std::sqrt(2. + 2. * a) * 0.5;
+    ros_transform.transform.rotation.x = 0.;
+    ros_transform.transform.rotation.y = 0.;
+    ros_transform.transform.rotation.z = std::copysign(std::sqrt(2. - 2. * a) * 0.5, b);
+    std::cout << "T from " << ros_transform.header.frame_id << " to " << ros_transform.child_frame_id << std::endl;
     result.push_back(ros_transform);
+    std::cout << ros_transform << std::endl;
   }
-
   return result;
 }
 

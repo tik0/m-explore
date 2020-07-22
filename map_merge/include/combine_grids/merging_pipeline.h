@@ -39,10 +39,11 @@
 
 #include <vector>
 
-#include <geometry_msgs/Transform.h>
+#include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/OccupancyGrid.h>
 
 #include <opencv2/core/utility.hpp>
+#include <math.h>
 
 namespace combine_grids
 {
@@ -57,11 +58,13 @@ class MergingPipeline
 public:
   template <typename InputIt>
   void feed(InputIt grids_begin, InputIt grids_end);
-  bool estimateTransforms(FeatureType feature = FeatureType::AKAZE,
-                          double confidence = 1.0);
+  bool estimateTransforms(FeatureType feature,
+                          double confidence,
+                          std::vector<std::string> robots,
+                          std::string reference_robot);
   nav_msgs::OccupancyGrid::Ptr composeGrids();
 
-  std::vector<geometry_msgs::Transform> getTransforms() const;
+  std::vector<geometry_msgs::TransformStamped> transformsForPublish(std::vector<std::string> robots);
   template <typename InputIt>
   bool setTransforms(InputIt transforms_begin, InputIt transforms_end);
 
@@ -69,6 +72,7 @@ private:
   std::vector<nav_msgs::OccupancyGrid::ConstPtr> grids_;
   std::vector<cv::Mat> images_;
   std::vector<cv::Mat> transforms_;
+  std::string header_frame_;
 };
 
 template <typename InputIt>

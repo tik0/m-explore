@@ -65,11 +65,32 @@ static inline void writeDebugMatchingInfo(
     const std::vector<cv::detail::MatchesInfo>& pairwise_matches)
 {
   for (auto& match_info : pairwise_matches) {
-    if (match_info.H.empty() ||
-        match_info.src_img_idx >= match_info.dst_img_idx) {
+    if (match_info.H.empty() || match_info.src_img_idx >= match_info.dst_img_idx) {
       continue;
     }
-    std::cout << match_info.src_img_idx << " " << match_info.dst_img_idx
+
+    /* 
+     *       a  b  tx
+     *  H =  c  d  ty  H is 2d affine transformation matrix
+     *       0  0  tz
+     */      
+    double a = match_info.H.at<double>(0,0);
+    double b = match_info.H.at<double>(0,1);
+    double c = match_info.H.at<double>(1,0);
+    double d = match_info.H.at<double>(1,1);
+    double tx = match_info.H.at<double>(0,2);
+    double ty = match_info.H.at<double>(1,2);
+    double tz = match_info.H.at<double>(2,2);
+
+    double yaw, yaw_deg, scale_x, scale_y;
+    yaw = atan2(c, d);
+    yaw_deg = yaw * (180./CV_PI);
+
+    scale_x = sqrt(pow(a, 2) + pow(c, 2));
+    scale_y = sqrt(pow(b, 2) + pow(d, 2));
+ 
+
+    std::cout << "Transform from: " << match_info.src_img_idx << " to " << match_info.dst_img_idx
               << std::endl
               << "features: "
               << image_features[size_t(match_info.src_img_idx)].keypoints.size()
@@ -82,8 +103,13 @@ static inline void writeDebugMatchingInfo(
               << match_info.num_inliers / double(match_info.matches.size())
               << std::endl
               << "confidence: " << match_info.confidence << std::endl
-              << match_info.H << std::endl;
+              << "scale: " << scale_x << " " << scale_y << std::endl
+              << match_info.H << std::endl
+              << "offset: " << tx << " " << ty << " " << tz << std::endl
+              << "yaw:   " << yaw << " " << yaw_deg << std::endl << std::endl;
+
     cv::Mat img;
+    /*
     // draw all matches
     cv::drawMatches(images[size_t(match_info.src_img_idx)],
                     image_features[size_t(match_info.src_img_idx)].keypoints,
@@ -93,6 +119,7 @@ static inline void writeDebugMatchingInfo(
     cv::imwrite(std::to_string(match_info.src_img_idx) + "_" +
                     std::to_string(match_info.dst_img_idx) + "_matches.png",
                 img);
+    */
     // draw inliers only
     cv::drawMatches(
         images[size_t(match_info.src_img_idx)],

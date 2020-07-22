@@ -47,7 +47,6 @@ namespace internal
 nav_msgs::OccupancyGrid::Ptr GridCompositor::compose(
     const std::vector<cv::Mat>& grids, const std::vector<cv::Rect>& rois)
 {
-  // TODO Check composer to merge wrt. to the destination frame, and not arbitrary
   ROS_ASSERT(grids.size() == rois.size());
 
   nav_msgs::OccupancyGrid::Ptr result_grid(new nav_msgs::OccupancyGrid());
