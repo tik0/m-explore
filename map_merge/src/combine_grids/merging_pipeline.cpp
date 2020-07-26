@@ -39,8 +39,6 @@
 #include <combine_grids/merging_pipeline.h>
 #include <ros/assert.h>
 #include <ros/console.h>
-#include <opencv2/stitching/detail/matchers.hpp>
-#include <opencv2/stitching/detail/motion_estimators.hpp>
 #include "estimation_internal.h"
 
 namespace combine_grids
@@ -48,10 +46,9 @@ namespace combine_grids
 bool MergingPipeline::estimateTransforms(FeatureType feature_type, double confidence, std::vector<std::string> robots, std::string reference_robot)
 {
   std::vector<cv::detail::ImageFeatures> image_features;
-  std::vector<cv::detail::MatchesInfo> pairwise_matches;
   std::vector<cv::detail::CameraParams> transforms;
   std::vector<int> good_indices;
-  int ref_id = 0;
+  int ref_id = -1;
 
   // TODO investigate value translation effect on features
   cv::Ptr<cv::detail::FeaturesFinder> finder = internal::chooseFeatureFinder(feature_type);
@@ -76,22 +73,22 @@ bool MergingPipeline::estimateTransforms(FeatureType feature_type, double confid
 
   /* find corespondent features */
   ROS_DEBUG("pairwise matching features");
-  (*matcher)(image_features, pairwise_matches);
+  (*matcher)(image_features, pairwise_matches_);
   matcher->collectGarbage();
 
 #ifndef NDEBUG
-  //internal::writeDebugMatchingInfo(images_, image_features, pairwise_matches);
+  //internal::writeDebugMatchingInfo(images_, image_features, pairwise_matches_);
 #endif
 
   /* use only matches that has enough confidence. leave out matches that are not
    * connected (small components) */
   good_indices = cv::detail::leaveBiggestComponent(
-      image_features, pairwise_matches, static_cast<float>(confidence));
+      image_features, pairwise_matches_, static_cast<float>(confidence));
 
   /* estimate transform */
   ROS_DEBUG("calculating transforms in global reference frame");
   // note: currently used estimator never fails
-  if (!(*estimator)(image_features, pairwise_matches, transforms)) {
+  if (!(*estimator)(image_features, pairwise_matches_, transforms)) {
     return false;
   }
 
@@ -130,45 +127,57 @@ bool MergingPipeline::estimateTransforms(FeatureType feature_type, double confid
           ref_id = i;
       }
   }
+  if(ref_id < 0) {
+      ROS_WARN("Referenced robot seems not to be in robot list.");
+      return false;
+  }
 
-  // cv likes doubles for matrix inverting very much..
+  // cv wants doubles for matrix inverting
   for(auto tr : transforms_) {
-      cv::Mat mat = cv::Mat::eye(3, 3, CV_64FC1);
+      cv::Mat mat = cv::Mat::eye(3, 3, CV_64F);
       mat = tr.clone();
-      mat.assignTo(tr, CV_64FC1);
+      mat.assignTo(tr, CV_64F);
   }
   ROS_DEBUG("Try setting reference frame");
 
   // Check if the reference robot has its transformation yet. Otherwise the tf subscriber fails.
+
   if (transforms_.at(ref_id).empty()) {
       ROS_INFO("no transform for reference frame available yet");
       return false;
   }
+
   /*
    * If the reference is not the correct one, the transforms must be calculated to the correct one
    */
   for (size_t i = 0; i < transforms_.size(); ++i) {
-      cv::Mat diff = transforms_.at(i) != cv::Mat::eye(3, 3, CV_64FC1);
+      if(transforms_.at(i).empty()) continue;
+      cv::Mat diff = transforms_.at(i) != cv::Mat::eye(3, 3, CV_64F);
       if(cv::countNonZero(diff) == 0) {
           if(i != ref_id) {
               cv::Mat Tref_inv = transforms_.at(ref_id).inv();
               for(size_t j = 0; j < transforms_.size(); ++j) {
-                  if(j == ref_id) transforms_.at(j) = cv::Mat::eye(3, 3, CV_64FC1);
+                  if (transforms_.at(j).empty()) continue;
+                  if(j == ref_id) transforms_.at(j) = cv::Mat::eye(3, 3, CV_64F);
                   else transforms_.at(j) = transforms_.at(j) * Tref_inv;
               }
           }
           break;
       }
   }
+  ROS_DEBUG("Reference frame set");
   return true;
 }
 
 
 nav_msgs::OccupancyGrid::Ptr MergingPipeline::composeGrids()
 {
-  ROS_ASSERT(images_.size() == transforms_.size());
-  ROS_ASSERT(images_.size() == grids_.size());
-
+  if(images_.size() != transforms_.size()) {
+    return nullptr;
+  }
+  if(images_.size() != grids_.size()) {
+    return nullptr;
+  }
   if (images_.empty()) {
     return nullptr;
   }
@@ -177,14 +186,13 @@ nav_msgs::OccupancyGrid::Ptr MergingPipeline::composeGrids()
   internal::GridWarper warper;
   std::vector<cv::Mat> imgs_warped;
   imgs_warped.reserve(images_.size());
-  std::vector<cv::Rect> rois;
-  rois.reserve(images_.size());
+  rois_.clear();
+  rois_.reserve(images_.size());
 
   for (size_t i = 0; i < images_.size(); ++i) {
     if (!transforms_[i].empty() && !images_[i].empty()) {
       imgs_warped.emplace_back();
-      rois.emplace_back(
-          warper.warp(images_[i], transforms_[i], imgs_warped.back()));
+      rois_.emplace_back(warper.warp(images_[i], transforms_[i], imgs_warped.back()));
     }
   }
 
@@ -195,8 +203,9 @@ nav_msgs::OccupancyGrid::Ptr MergingPipeline::composeGrids()
   ROS_DEBUG("compositing result grid");
   nav_msgs::OccupancyGrid::Ptr result;
   internal::GridCompositor compositor;
-  result = compositor.compose(imgs_warped, rois);
+  result = compositor.compose(imgs_warped, rois_);
   result->info.map_load_time = ros::Time::now();
+  result->info.origin.orientation.w = 1.;
   // TODO is this correct?
   result->info.resolution = grids_[0]->info.resolution;
 
@@ -204,33 +213,61 @@ nav_msgs::OccupancyGrid::Ptr MergingPipeline::composeGrids()
 }
 
 
-std::vector<geometry_msgs::TransformStamped> MergingPipeline::transformsForPublish(std::vector<std::string> robots)
+std::vector<geometry_msgs::TransformStamped> MergingPipeline::transformsForPublish(std::vector<std::string> robots, double resolution)
 {
 
   std::vector<geometry_msgs::TransformStamped> result;
+  cv::Vec2d origin_offset;
+  cv::Mat origin_offset_rot;
+  cv::Rect r(0, 0, 2, 2);
   result.reserve(transforms_.size());
 
+  ROS_DEBUG("Transform offset");
+
+  /*
+   * The size of the merged map is determined in the warping process.
+   * To get the offset applied by this process, one need the minimal
+   * offset of the roi to warp (as seen in grid_warper.cpp.
+   */
+  cv::Point2d offset;
+  offset.x = 0, offset.y = 0;
+  for(auto& r : rois_) {
+      offset.x = (r.tl().x < offset.x ? r.tl().x : offset.x);
+      offset.y = (r.tl().y < offset.y ? r.tl().y : offset.y);
+  }
 
   for (size_t i = 0; i < transforms_.size(); ++i) {
-    if (transforms_.at(i).empty()) {
-      //result.emplace_back();
-      continue;
-    }
-    cv::Mat T_inv;
-    T_inv = transforms_.at(i);//.inv();
+    if (transforms_.at(i).empty()) continue;
+
+    cv::Mat T_inv, R;
+    T_inv = transforms_.at(i).inv();
+    R = T_inv(r).clone();
 
     ROS_ASSERT(transforms_[i].type() == CV_64FC1);
     geometry_msgs::TransformStamped ros_transform;
-    ros_transform.header.frame_id = "/world";                   // Transform from ... TODO: Get this from launch file!
+    ros_transform.header.frame_id = "/world";                   // Transform from ...
     ros_transform.child_frame_id = robots.at(i) + "/map";       // Transform to   ...
 
     ros_transform.header.stamp = ros::Time::now();
 
-    ros_transform.transform.translation.x = T_inv.at<double>(0, 2);
-    ros_transform.transform.translation.y = T_inv.at<double>(1, 2);
+    /*
+     * The origin offset provided by the warper is in the map frame.
+     * One need to transform it into the world frame to get the correct offsets
+     */
+
+    origin_offset[0] = (double)grids_[i]->info.origin.position.x;
+    origin_offset[1] = (double)grids_[i]->info.origin.position.y;
+
+    origin_offset_rot = R * cv::Mat(origin_offset);
+
+    ROS_DEBUG("Make Transforms ready for publish");
+    ros_transform.transform.translation.x = (T_inv.at<double>(0, 2) - offset.x) * resolution - origin_offset_rot.at<double>(0,0);
+    ros_transform.transform.translation.y = (T_inv.at<double>(1, 2) - offset.y) * resolution - origin_offset_rot.at<double>(1,0);
     ros_transform.transform.translation.z = 0.;
 
-    // our rotation is in fact only 2D, thus quaternion can be simplified
+    /* To avoid errors caused by scaling (maps are metric, so scaling is always a mistake, caused by to many DOF of affine transformator.
+     * We only need 3 DOFs, OpenCVs has 6.
+     */
     double a = T_inv.at<double>(0, 0);
     double b = T_inv.at<double>(1, 0);
     double scale;
@@ -245,9 +282,7 @@ std::vector<geometry_msgs::TransformStamped> MergingPipeline::transformsForPubli
     ros_transform.transform.rotation.x = 0.;
     ros_transform.transform.rotation.y = 0.;
     ros_transform.transform.rotation.z = std::copysign(std::sqrt(2. - 2. * a) * 0.5, b);
-    std::cout << "T from " << ros_transform.header.frame_id << " to " << ros_transform.child_frame_id << std::endl;
     result.push_back(ros_transform);
-    std::cout << ros_transform << std::endl;
   }
   return result;
 }

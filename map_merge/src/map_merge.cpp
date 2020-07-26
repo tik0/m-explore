@@ -61,6 +61,7 @@ MapMerge::MapMerge() : subscriptions_size_(0)
   private_nh.param<std::string>("robot_namespace", robot_namespace_, "");
   private_nh.param<std::string>("merged_map_topic", merged_map_topic, "map");
   private_nh.param<std::string>("world_frame", world_frame_, "world");
+  private_nh.param<std::string>("reference_robot", reference_robot_, "/robot1");
 
   /* publishing */
   merged_map_publisher_ =
@@ -96,7 +97,11 @@ void MapMerge::topicSubscribing()
       continue;
     }
     std::cout << "adding robot name " << robot_name << " to list" << std::endl;
-    robot_names_.push_back(robot_name);
+    /*
+     * The topic subsciption is a forward_list so the robot topics are sorted like in a stack.
+     * To match the maps and transformations, the robot name list has to be in the same order!
+     */
+    robot_names_.insert(robot_names_.begin(), robot_name);
 
     if (have_initial_poses_ && !getInitPose(robot_name, init_pose)) {
       ROS_WARN("Couldn't get initial position for robot [%s]\n"
@@ -150,45 +155,27 @@ void MapMerge::mapMerging()
   ROS_DEBUG("Map merging started.");
 
   std::vector<geometry_msgs::TransformStamped> transforms;
-
-  if (have_initial_poses_) {
-    std::vector<nav_msgs::OccupancyGridConstPtr> grids;
-    std::vector<geometry_msgs::Transform> transforms;
-    grids.reserve(subscriptions_size_);
-    {
-      boost::shared_lock<boost::shared_mutex> lock(subscriptions_mutex_);
-      for (auto& subscription : subscriptions_) {
-        std::lock_guard<std::mutex> s_lock(subscription.mutex);
-        grids.push_back(subscription.readonly_map);
-        transforms.push_back(subscription.initial_pose);
-      }
-    }
-    // we don't need to lock here, because when have_initial_poses_ is true we
-    // will not run concurrently on the pipeline
-    pipeline_.feed(grids.begin(), grids.end());
-    pipeline_.setTransforms(transforms.begin(), transforms.end());
-  }
-
   nav_msgs::OccupancyGridPtr merged_map;
   {
     std::lock_guard<std::mutex> lock(pipeline_mutex_);
     merged_map = pipeline_.composeGrids();
   }
 
-
-  transforms = pipeline_.transformsForPublish(robot_names_);
-
   if (!merged_map) {
     return;
   }
+
+  transforms = pipeline_.transformsForPublish(robot_names_,
+                                              (double)merged_map->info.resolution);
   
   ROS_DEBUG("transforms calculated, publishing");
+
   for (auto& t : transforms) {
-    std::cout << t << std::endl;
+    ROS_DEBUG_STREAM(" --- " << std::endl << t);
   }
 
-  if(have_reference_frame_) transform_br.sendTransform(transforms);
 
+  if(have_reference_frame_) transform_br.sendTransform(transforms);
 
   ROS_DEBUG("all maps merged, publishing");
   ros::Time now = ros::Time::now();
@@ -214,15 +201,12 @@ void MapMerge::poseEstimation()
 
   std::lock_guard<std::mutex> lock(pipeline_mutex_);
   pipeline_.feed(grids.begin(), grids.end());
-  if(std::find(robot_names_.begin(), robot_names_.end(), reference_robot_) != robot_names_.end()) // Is reference found yet?
-  {
-      //std::cout << "Reference = " << reference_robot_ << std::endl;
-      // estimateTransforms returns true for having a reference frame
-      have_reference_frame_ = pipeline_.estimateTransforms(combine_grids::FeatureType::AKAZE,
+
+  // estimateTransforms returns true for having a reference frame
+  have_reference_frame_ = pipeline_.estimateTransforms(combine_grids::FeatureType::AKAZE,
                                                            confidence_treshold_,
                                                            robot_names_,
                                                            reference_robot_);
-  }
 }
 
 void MapMerge::fullMapUpdate(const nav_msgs::OccupancyGrid::ConstPtr& msg,

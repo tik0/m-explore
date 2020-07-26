@@ -50,6 +50,7 @@
 #include <ros/ros.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <boost/thread.hpp>
+#include <opencv2/core/core.hpp>
 
 namespace map_merge
 {
@@ -61,6 +62,7 @@ struct MapSubscription {
   geometry_msgs::Transform initial_pose;
   nav_msgs::OccupancyGrid::Ptr writable_map;
   nav_msgs::OccupancyGrid::ConstPtr readonly_map;
+  geometry_msgs::Transform origin_offset;
 
   ros::Subscriber map_sub;
   ros::Subscriber map_updates_sub;
@@ -80,8 +82,8 @@ private:
   std::string robot_map_updates_topic_;
   std::string robot_namespace_;
   std::string world_frame_;
+  std::string reference_robot_;
   std::vector<std::string> robot_names_;
-  std::string reference_robot_ = "/robot2"; // NOTE ref fixed for testing
   bool have_initial_poses_;
   bool have_reference_frame_ = false;
 

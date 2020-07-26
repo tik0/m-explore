@@ -55,10 +55,6 @@ cv::Rect GridWarper::warp(const cv::Mat& grid, const cv::Mat& transform,
   H.at<double>(0, 2) -= roi.tl().x;
   H.at<double>(1, 2) -= roi.tl().y;
 
-#ifndef NDEBUG
-  std::cout << "T: " << transform << std::endl;
-#endif
-
   warpAffine(grid, warped_grid, H, roi.size(), cv::INTER_NEAREST,
              cv::BORDER_CONSTANT,
              cv::Scalar::all(255) /* this is -1 for signed char */);

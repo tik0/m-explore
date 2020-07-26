@@ -43,6 +43,12 @@
 #include <nav_msgs/OccupancyGrid.h>
 
 #include <opencv2/core/utility.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+
+#include <opencv2/stitching/detail/matchers.hpp>
+#include <opencv2/stitching/detail/motion_estimators.hpp>
+
 #include <math.h>
 
 namespace combine_grids
@@ -64,7 +70,8 @@ public:
                           std::string reference_robot);
   nav_msgs::OccupancyGrid::Ptr composeGrids();
 
-  std::vector<geometry_msgs::TransformStamped> transformsForPublish(std::vector<std::string> robots);
+  std::vector<geometry_msgs::TransformStamped> transformsForPublish(std::vector<std::string> robots,
+                                                                    double resolution);
   template <typename InputIt>
   bool setTransforms(InputIt transforms_begin, InputIt transforms_end);
 
@@ -73,6 +80,8 @@ private:
   std::vector<cv::Mat> images_;
   std::vector<cv::Mat> transforms_;
   std::string header_frame_;
+  std::vector<cv::detail::MatchesInfo> pairwise_matches_;
+  std::vector<cv::Rect> rois_;
 };
 
 template <typename InputIt>
@@ -99,6 +108,14 @@ void MergingPipeline::feed(InputIt grids_begin, InputIt grids_end)
       images_.emplace_back();
     }
   }
+  // ros is right-sided, cv is left-sided so images are mirrored at x-axis
+  /*
+  for(auto& image : images_) {
+      cv::Mat im_flipped;
+      cv::flip(image, im_flipped, 0);
+      im_flipped.copyTo(image);
+  }
+  */
 }
 
 template <typename InputIt>

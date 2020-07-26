@@ -36,6 +36,9 @@
 
 #include <combine_grids/grid_compositor.h>
 
+#include <opencv2/core/utility.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
 #include <opencv2/stitching/detail/util.hpp>
 
 #include <ros/assert.h>
@@ -77,6 +80,8 @@ nav_msgs::OccupancyGrid::Ptr GridCompositor::compose(
     // compose img into result matrix
     cv::max(result_roi, warped_signed, result_roi);
   }
+
+  cv::imwrite("warp_res.png", result);
 
   return result_grid;
 }
